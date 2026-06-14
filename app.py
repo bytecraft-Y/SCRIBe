@@ -8,14 +8,17 @@ import gc
 
 st.set_page_config(page_title="Universal Media Transcriber", layout="wide")
 st.title("🎙️ Audio & Video Transcription Assistant")
+st.write("Optimized with Whisper-Tiny for fast, ultra-light cloud execution.")
 
 @st.cache_resource
 def load_transcriber():
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    # Fallback to 'whisper-base' if deploying on 1GB RAM limits
+    # Force CPU usage if GPU isn't available, which is standard for free Streamlit Cloud
+    device = 0 if torch.cuda.is_available() else -1
+    
+    # 'openai/whisper-tiny' is ultra-lightweight (~75MB file size, ~150MB operational RAM)
     return pipeline(
         "automatic-speech-recognition", 
-        model="openai/whisper-base", 
+        model="openai/whisper-tiny", 
         device=device,
         chunk_length_s=30
     )
@@ -28,7 +31,7 @@ uploaded_file = st.file_uploader("Select Media File", type=SUPPORTED_FORMATS)
 if uploaded_file is not None:
     file_extension = os.path.splitext(uploaded_file.name)[1]
     
-    # 1. Write and CLOSE the file to prevent OS permission locks
+    # Secure binary write and immediate file closing to handle cross-OS file locking
     tmp_media = tempfile.NamedTemporaryFile(delete=False, suffix=file_extension)
     tmp_media.write(uploaded_file.read())
     tmp_media_path = tmp_media.name
@@ -39,16 +42,13 @@ if uploaded_file is not None:
 
     try:
         with st.spinner("Extracting audio track..."):
-            # Extract audio
             clip = mp.AudioFileClip(tmp_media_path)
             clip.write_audiofile(tmp_audio_path, logger=None)
+            clip.close()  # Clear video file from memory immediately
             
-            # Explicitly close the clip to free up RAM before model inference
-            clip.close()
-            
-        with st.spinner("Generating transcript (this may take a moment on CPU)..."):
-            # Batch size reduced to 2 to prevent RAM spikes on cloud instances
-            result = transcriber(tmp_audio_path, batch_size=2)
+        with st.spinner("Generating transcript..."):
+            # batch_size=1 ensures the CPU processes one chunk at a time, minimizing RAM spikes
+            result = transcriber(tmp_audio_path, batch_size=1)
             transcript_text = result["text"]
             
             st.success("Transcription Complete!")
@@ -65,9 +65,9 @@ if uploaded_file is not None:
         st.error(f"An error occurred: {str(e)}")
         
     finally:
-        # 2. Aggressive cleanup and forced garbage collection
+        # Aggressive cleanup of local file system buffers
         if os.path.exists(tmp_media_path):
             os.remove(tmp_media_path)
         if os.path.exists(tmp_audio_path):
             os.remove(tmp_audio_path)
-        gc.collect()
+        gc.collect()  # Explicitly trigger Python garbage collection
